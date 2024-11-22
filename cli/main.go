@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/c-bata/go-prompt"
 	"github.com/dicedb/dicedb-go"
@@ -21,6 +22,7 @@ type DiceDBClient struct {
 	subCancel  context.CancelFunc
 	addr       string
 	password   string
+	wg         sync.WaitGroup // Add WaitGroup for synchronization
 }
 
 func Run(host string, port int) {
@@ -59,6 +61,7 @@ func Run(host string, port int) {
 				if dicedbClient.subscribed {
 					fmt.Println("Exiting watch mode.")
 					dicedbClient.subCancel()
+					dicedbClient.wg.Wait()
 				} else {
 					handleExit()
 				}
@@ -293,9 +296,11 @@ func (c *DiceDBClient) subscribe(channels []string) {
 }
 
 func (c *DiceDBClient) watchCommand(cmd string, args ...interface{}) {
+	c.wg.Add(1)
 	defer func() {
 		c.subscribed = false
 		c.subType = ""
+		c.wg.Done()
 	}()
 
 	c.watchConn = c.client.WatchConn(c.subCtx)
@@ -309,12 +314,20 @@ func (c *DiceDBClient) watchCommand(cmd string, args ...interface{}) {
 	}
 
 	fmt.Println("Press Ctrl+C to exit watch mode.")
+	cmdFingerPrint := firstMsg.Fingerprint
 	c.printWatchResult(firstMsg)
 
 	channel := c.watchConn.Channel()
 	for {
 		select {
 		case <-c.subCtx.Done():
+			err = c.watchConn.Unwatch(c.subCtx, cmd, cmdFingerPrint)
+			if err != nil {
+				fmt.Printf("error: %v\n", err)
+				return
+			}
+			c.subscribed = false
+			c.subType = ""
 			return
 		case res := <-channel:
 			if res == nil {
